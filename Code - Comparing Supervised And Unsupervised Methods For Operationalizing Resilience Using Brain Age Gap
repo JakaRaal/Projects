@@ -1,0 +1,719 @@
+#Load required libraries
+rm(list=ls())
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lme4)
+library(broom.mixed)   
+library(knitr)
+library(lmerTest)
+library(psych)
+library(mclust)
+library(factoextra)
+library(purrr)
+
+############################
+#     Data preparation     #
+############################
+
+#Read data
+df1 <- read.csv("data")
+
+
+#Compute Brain Age Gap (BAG)
+df1 <- df1 %>% 
+  mutate(BAG = BA - age)
+
+df_clean <- df1[,c("Individual", "Timepoint","SEX","EDUCATION_1944","EDUCATION_YEARS_1944","QCVerdict","lh_MeanThickness_thickness_long","rh_MeanThickness_thickness_long", "BA", "age", "Mean_ThicknessLONG_RA","MMSE", "BAG")]
+
+df_clean <- df_clean %>% 
+  rename("lh_corticalthickness" = "lh_MeanThickness_thickness_long",
+         "rh_corticalthickness" = "rh_MeanThickness_thickness_long")
+
+
+#Select the relevant columns and pivot the data from long to wide format
+df1_wide <- df_clean %>% 
+  select(Individual, Timepoint, BA, age, Mean_ThicknessLONG_RA, BAG, MMSE) %>% 
+  pivot_wider(names_from = Timepoint, 
+              values_from = c(BA, age, Mean_ThicknessLONG_RA, BAG, MMSE))
+
+#Compute the change in MMSE between v1 and v2
+df1_wide <- df1_wide %>% 
+  mutate(MMSE_diff = MMSE_v2 - MMSE_v1)
+
+
+
+##########################################
+#    Table for descriptive statistics    #
+##########################################
+
+#Select columns
+vars <- c(
+  "BA_v1", "BA_v2",
+  "age_v1", "age_v2",
+  "Mean_ThicknessLONG_RA_v1", "Mean_ThicknessLONG_RA_v2",
+  "BAG_v1", "BAG_v2"
+)
+
+df_subset <- df1_wide %>%
+  select(all_of(vars))
+
+#Get descriptive statistics
+desc_stats <- psych::describe(df_subset)
+
+#Subset table columns
+desc_subset <- desc_stats[, c("mean", "sd", "median", "min", "max", "range")]
+
+#Create a LaTeX table 
+knitr::kable(
+  desc_subset,
+  format   = "latex",
+  booktabs = TRUE,
+  digits   = 3,
+  caption  = "Descriptive Statistics of H70 data (N = 429)."
+)
+
+
+
+###################################################
+#     Line plots: Brain Maintenance (BM) group    #
+###################################################
+
+#Create the BM subset:
+#1. Individuals with a negative BAG at v1.
+df_bm <- df1_wide %>% 
+  filter(BAG_v1 < 0)
+
+#Convert data to long format
+df_long_bm <- df_bm %>%
+  pivot_longer(
+    cols = c(age_v1, age_v2, Mean_ThicknessLONG_RA_v1, Mean_ThicknessLONG_RA_v2, BAG_v1, BAG_v2, MMSE_v1, MMSE_v2),
+    names_to = c(".value", "Examination"),      
+    names_pattern = "(.*)_(v[12])"        
+  )
+
+#Line plot for change in MCT between examinations
+ggplot(df_long_bm, aes(x = Examination, y = Mean_ThicknessLONG_RA, group = factor(Individual))) +
+  geom_line(alpha = 0.4) +  
+  geom_point(alpha = 0.6) +   
+  scale_x_discrete(
+    name = "Examination",
+    labels = c("v1" = "Baseline", "v2" = "Follow-up")  
+  ) +
+  labs(
+    y = "Mean Cortical Thickness"
+  ) +
+  theme_minimal(base_size = 14) + stat_summary(aes(group = 1), fun = "mean", geom = "line", 
+                                               color = "purple", size = 1.2) + stat_summary(aes(group = 1), fun = "mean", geom = "point", 
+                                                                                            color = "purple", size = 2)
+#Line plot of change in BAG over time for BM group
+ggplot(df_long_bm, aes(x = Examination, y = BAG, group = factor(Individual))) +
+  geom_line(alpha = 0.4) +  
+  geom_point(alpha = 0.6) +   
+  scale_x_discrete(
+    name = "Examination",
+    labels = c("v1" = "Baseline", "v2" = "Follow-up")  
+  ) +
+  labs(
+    y = "BAG"
+  ) +
+  theme_minimal(base_size = 14) + stat_summary(aes(group = 1), fun = "mean", geom = "line", 
+                                               color = "purple", size = 1.2) + stat_summary(aes(group = 1), fun = "mean", geom = "point", 
+                                                                                            color = "purple", size = 2)
+
+#Line plot of change in MMSE over time for BM group
+ggplot(df_long_bm, aes(x = Examination, y = MMSE, group = factor(Individual))) +
+  geom_line(alpha = 0.4) +  
+  geom_point(alpha = 0.6) +   
+  scale_x_discrete(
+    name = "Examination",
+    labels = c("v1" = "Baseline", "v2" = "Follow-up")  
+  ) +
+  scale_y_continuous(
+    name = "MMSE",
+    breaks = seq(0, 30, 1)  
+  ) +
+  labs(
+    y = "MMSE"
+  ) +
+  theme_minimal(base_size = 14) + stat_summary(aes(group = 1), fun = "mean", geom = "line", 
+                                               color = "purple", size = 1.2) + stat_summary(aes(group = 1), fun = "mean", geom = "point", 
+                                                                                            color = "purple", size = 2)
+
+
+
+###################################################
+#     Line plots: Cognitive Reserve (CR) group    #
+###################################################
+
+#Create the CR subset:
+# 1. Individuals with a positive BAG at v1.
+# 2. Individuals with a decrease in MMSE that is less than 1.5 units.
+df_cr <- df1_wide %>% 
+  filter(BAG_v1 > 0, MMSE_diff > -1.5)
+
+#Convert into long format
+df_long_cr <- df_cr %>%
+  pivot_longer(
+    cols = c(age_v1, age_v2, Mean_ThicknessLONG_RA_v1, Mean_ThicknessLONG_RA_v2, BAG_v1, BAG_v2 ,MMSE_v1, MMSE_v2),
+    names_to = c(".value", "Examination"),      
+    names_pattern = "(.*)_(v[12])"        
+  )
+
+#line plot mean cortical thickness over time CR group
+ggplot(df_long_cr, aes(x = Examination, y = Mean_ThicknessLONG_RA, group = factor(Individual))) +
+  geom_line(alpha = 0.4) +  
+  geom_point(alpha = 0.6) +   
+  scale_x_discrete(
+    name = "Examination",
+    labels = c("v1" = "Baseline", "v2" = "Follow-up")  
+  ) +
+  labs(
+    y = "Mean Cortical Thickness"
+  ) +
+  theme_minimal(base_size = 14) + stat_summary(aes(group = 1), fun = "mean", geom = "line", 
+                                               color = "dodgerblue1", size = 1.2) + stat_summary(aes(group = 1), fun = "mean", geom = "point", 
+                                                                                                 color = "dodgerblue1", size = 2)
+
+#line plot of BAG over time CR group
+ggplot(df_long_cr, aes(x = Examination, y = BAG, group = factor(Individual))) +
+  geom_line(alpha = 0.4) +  
+  geom_point(alpha = 0.6) +   
+  scale_x_discrete(
+    name = "Examination",
+    labels = c("v1" = "Baseline", "v2" = "Follow-up")  
+  ) +
+  labs(
+    y = "BAG"
+  ) +
+  theme_minimal(base_size = 14) + stat_summary(aes(group = 1), fun = "mean", geom = "line", 
+                                               color = "dodgerblue2", size = 1.2) + stat_summary(aes(group = 1), fun = "mean", geom = "point", 
+                                                                                                 color = "dodgerblue2", size = 2)
+
+#line plot of MMSE over time CR group 
+ggplot(df_long_cr, aes(x = Examination, y = MMSE, group = factor(Individual))) +
+  geom_line(alpha = 0.4, size = 1) +  
+  #geom_point(position = position_jitter(width = 0.05, height = 0.1), alpha = 0.6) +   
+  scale_x_discrete(
+    name = "Examination",
+    labels = c("v1" = "Baseline", "v2" = "Follow-up")  
+  ) +
+  scale_y_continuous(
+    name = "MMSE",
+    breaks = seq(0, 30, 1)  
+  ) +
+  labs(
+    y = "MMSE"
+  ) +
+  theme_minimal(base_size = 14) + stat_summary(aes(group = 1), fun = "mean", geom = "line", 
+                                               color = "dodgerblue2", size = 1.2) + stat_summary(aes(group = 1), fun = "mean", geom = "point", 
+                                                                                                 color = "dodgerblue2", size = 2)
+
+
+###################################################
+#     Line plots: No resilience (NoRes) group     #
+###################################################
+
+#Create NoRes data, excluding individuals in either BM or CR
+df_no_res <- df1_wide %>%
+  filter(
+    !(Individual %in% df_bm$Individual),
+    !(Individual %in% df_cr$Individual)
+  )
+
+#Convert to long format
+df_long_nores <- df_no_res %>%
+  pivot_longer(
+    cols = c(age_v1, age_v2, Mean_ThicknessLONG_RA_v1, Mean_ThicknessLONG_RA_v2, BAG_v1, BAG_v2 ,MMSE_v1, MMSE_v2),
+    names_to = c(".value", "Examination"),      
+    names_pattern = "(.*)_(v[12])"        
+  )
+
+#Line plot of MCT over time NoRes group
+ggplot(df_long_nores, aes(x = Examination, y = Mean_ThicknessLONG_RA, group = factor(Individual))) +
+  geom_line(alpha = 0.4) +  
+  geom_point(alpha = 0.6) +   
+  scale_x_discrete(
+    name = "Examination",
+    labels = c("v1" = "Baseline", "v2" = "Follow-up")  
+  ) +
+  labs(
+    y = "Mean Cortical Thickness"
+  ) +
+  theme_minimal(base_size = 14) + stat_summary(aes(group = 1), fun = "mean", geom = "line", 
+                                               color = "green4", size = 1.2) + stat_summary(aes(group = 1), fun = "mean", geom = "point", 
+                                                                                            color = "green4", size = 2)
+
+#Line plot of BAG over time NoRes group
+ggplot(df_long_nores, aes(x = Examination, y = BAG, group = factor(Individual))) +
+  geom_line(alpha = 0.4) +  
+  geom_point(alpha = 0.6) +   
+  scale_x_discrete(
+    name = "Examination",
+    labels = c("v1" = "Baseline", "v2" = "Follow-up")  
+  ) +
+  labs(
+    y = "BAG"
+  ) +
+  theme_minimal(base_size = 14) + stat_summary(aes(group = 1), fun = "mean", geom = "line", 
+                                               color = "green4", size = 1.2) + stat_summary(aes(group = 1), fun = "mean", geom = "point", 
+                                                                                            color = "green4", size = 2)
+
+#Line plot of MMSE over time NoRes group
+ggplot(df_long_nores, aes(x = Examination, y = MMSE, group = factor(Individual))) +
+  geom_line(alpha = 0.4, size = 1) +   
+  scale_x_discrete(
+    name = "Examination",
+    labels = c("v1" = "Baseline", "v2" = "Follow-up")  
+  ) +
+  scale_y_continuous(
+    name = "MMSE",
+    breaks = seq(0, 30, 1)  
+  ) +
+  labs(
+    y = "MMSE"
+  ) +
+  theme_minimal(base_size = 14) + stat_summary(aes(group = 1), fun = "mean", geom = "line", 
+                                               color = "green4", size = 1.2) + stat_summary(aes(group = 1), fun = "mean", geom = "point", 
+                                                                                            color = "green4", size = 2)
+
+
+
+###################################################
+#  Random intercept LME models                    #
+###################################################
+
+#Create resilience group variable
+df1_wide <- df1_wide %>%
+  mutate(
+    resilience_group = case_when(
+      Individual %in% df_bm$Individual ~ "BM",
+      Individual %in% df_cr$Individual ~ "CR",
+      .default = "NoRes"
+    )
+  )
+
+table(df1_wide$resilience_group)
+
+
+
+#long dataset with BAG & MCT columns
+df_long_all <- df1_wide %>%
+  select(Individual, resilience_group,
+         BAG_v1, BAG_v2,
+         Mean_ThicknessLONG_RA_v1, Mean_ThicknessLONG_RA_v2) %>%
+  pivot_longer(
+    cols = c(BAG_v1, BAG_v2, 
+             Mean_ThicknessLONG_RA_v1, Mean_ThicknessLONG_RA_v2),
+    names_to = c(".value", "Timepoint"),
+    names_pattern = "(.*)_(v[12])"        
+  ) %>%
+  mutate(
+    Time  = ifelse(Timepoint == "v1", 0, 1),
+    Group = factor(resilience_group, levels = c("BM","CR","NoRes"))
+  )
+
+
+
+#--- BAG as response ---
+ri_bag_model <- lmer(BAG ~ Group * Time + (1 | Individual), data = df_long_all)
+summary(ri_bag_model)
+broom.mixed::tidy(ri_bag_model, effects = "fixed", conf.int = TRUE, conf.method = "Wald")
+
+#--- MCT as response ---
+ri_mct_model <- lmer(Mean_ThicknessLONG_RA ~ Group * Time + (1 | Individual), data = df_long_all)
+summary(ri_mct_model)
+broom.mixed::tidy(ri_mct_model, effects = "fixed", conf.int = TRUE, conf.method = "Wald")
+
+
+#######################################################
+#  Random slopes LME models                           #
+#######################################################
+
+#--- BAG as response ---
+rs_bag_uncorr <- lmer(BAG ~ Group * Time + (1 + Time || Individual), data = df_long_all)
+summary(rs_bag_uncorr)
+broom.mixed::tidy(rs_bag_uncorr, effects = "fixed", conf.int = TRUE, conf.method = "Wald")
+
+#--- MCT as response ---
+rs_mct_uncorr <- lmer(Mean_ThicknessLONG_RA ~ Group * Time + (1 + Time || Individual), data = df_long_all)
+summary(rs_mct_uncorr)
+broom.mixed::tidy(rs_mct_uncorr, effects = "fixed", conf.int = TRUE, conf.method = "Wald")
+
+
+
+#Anova test RI vs RS
+anova(ri_bag_model, rs_bag_uncorr)
+anova(ri_mct_model, rs_mct_uncorr)
+
+
+#######################################
+#    Data-driven approach: K-means    #
+#######################################
+
+#Create data for clustering
+df_clus <- df1_wide %>%
+  select(
+    BAG_v1, BAG_v2,
+    MMSE_v1, MMSE_v2,
+    Mean_ThicknessLONG_RA_v1, Mean_ThicknessLONG_RA_v2
+  )
+
+#Standardize columns
+df_scaled <- scale(df_clus)
+
+#Scree-plot
+fviz_nbclust(df_scaled, kmeans, method = "wss")
+
+#Silhouette plot
+dis = dist(df_scaled)^2 #Squared euclidean distance
+fviz_nbclust(df_scaled, kmeans, method = "silhouette", diss = dis)
+
+#Gap statistic - plot
+fviz_nbclust(df_scaled, kmeans, method = "gap_stat")
+
+#K-means clustering with 2 centers
+set.seed(007)
+kmeans_fit2 <- kmeans(df_scaled, centers = 2, nstart = 50)
+
+#Attach cluster assignment labels
+df_with_clusters2 <- cbind(df_clus, kmeans_cluster2 = kmeans_fit2$cluster)
+
+#Cluster mean and size
+cluster_means2 <- df_with_clusters2 %>%
+  group_by(kmeans_cluster2) %>%
+  summarise(
+    n = n(),
+    across(everything(), ~ mean(.x, na.rm = TRUE))
+  )
+
+#cluster means table
+print(cluster_means2)
+
+#######################################
+#    Data-driven approach: GMM        #
+#######################################
+
+#Fit model-based clustering
+set.seed(007)
+mc_fit <- Mclust(df_scaled)
+
+#summary of mixture modelling
+summary(mc_fit)
+
+
+mc_fit$G            #The optimal number of clusters
+mc_fit$modelName    #The covariance structure chosen
+
+#Change in BIC over components and covariance structures
+plot(mc_fit, what = "BIC")
+
+#Store cluster assignments
+cluster_assign <- mc_fit$classification  
+
+#Cluster means 
+df_analysis <- cbind(df_clus, cluster = cluster_assign)
+
+#Cluster means and size
+cluster_means <- df_analysis %>%
+  group_by(cluster) %>%
+  summarise(
+    n = n(),
+    across(everything(), mean, na.rm = TRUE)
+  )
+
+#Cluster means table
+cluster_means
+
+#####################################################################
+#    Comparison of Theory-based vs Data-driven group assignments    #
+#####################################################################
+
+
+#Create data for heat maps (cross-tabs)
+df_final <- df1_wide %>%
+  select(Individual,
+         resilience_group,
+         BAG_v1, 
+         BAG_v2,
+         Mean_ThicknessLONG_RA_v1,
+         Mean_ThicknessLONG_RA_v2,
+         MMSE_v1,
+         MMSE_v2) %>%
+  mutate(kmeans_cluster2 = kmeans_fit2$cluster ) %>%
+  mutate(gmm_cluster = mc_fit$classification)
+
+#Heat map for theory-based vs k-means
+heat_df2 <- df_final %>% 
+  count(resilience_group, kmeans_cluster2) %>%
+  mutate(kmeans_cluster2 = factor(kmeans_cluster2))
+
+ggplot(heat_df2, aes(kmeans_cluster2, resilience_group, fill = n)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = n), colour = "black", size = 3) +
+  scale_fill_gradient(
+    low  = "white", 
+    high = "firebrick",     
+    name = "Count"    
+  ) +
+  labs(x = "k-means cluster", y = "Theory group") +
+  theme_minimal(base_size = 11)
+
+#Heat map for theory-based vs GMM
+heat_df2 <- df_final %>% 
+  count(resilience_group, gmm_cluster) %>%
+  mutate(kmeans_cluster = factor(gmm_cluster))
+
+
+ggplot(heat_df2, aes(gmm_cluster, resilience_group, fill = n)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = n), colour = "black", size = 3) +
+  scale_fill_gradient(
+    low  = "white", 
+    high = "firebrick",     
+    name = "Count"    
+  ) +
+  labs(x = "GMM cluster", y = "Theory group") +
+  theme_minimal(base_size = 11)
+
+############################################################
+# Bootstrap-based clustering stability (ARI to reference)
+# - Methods: k-means (k=2) and GMM
+# - Compares each bootstrap solution to the reference clustering
+################################################
+
+
+# --- 1) Build the clustering feature matrix ---
+# Uses: BAG_v1, BAG_v2, MMSE_v1, MMSE_v2, Mean_ThicknessLONG_RA_v1, Mean_ThicknessLONG_RA_v2
+
+X_raw <- df1_wide %>%
+  select(Individual,
+         BAG_v1, BAG_v2,
+         MMSE_v1, MMSE_v2,
+         Mean_ThicknessLONG_RA_v1, Mean_ThicknessLONG_RA_v2)
+
+#Keep original means/sds to apply the SAME scaling to bootstrap samples 
+X_mat <- as.matrix(X_raw %>% select(-Individual))
+sc_center <- colMeans(X_mat, na.rm = TRUE)
+sc_scale  <- apply(X_mat, 2, sd, na.rm = TRUE)
+X_scaled  <- scale(X_mat, center = sc_center, scale = sc_scale)
+ids       <- X_raw$Individual
+
+#Helper to scale a new matrix with the same parameters
+scale_with <- function(m, center, scale) {
+  scale(m, center = center, scale = scale)
+}
+
+# --- 2) Reference (full-sample) clusterings ---
+set.seed(7)
+
+#k-means reference with k=2
+km_ref <- kmeans(X_scaled, centers = 2, nstart = 50)
+cl_km_ref <- setNames(km_ref$cluster, ids)
+
+#GMM reference 
+mc_ref <- Mclust(X_scaled) 
+cl_gmm_ref <- setNames(mc_ref$classification, ids)
+
+
+# --- 3) Bootstrap function ---
+boot_cluster_once <- function(b, ids, X_scaled, center, scale,
+                              method = c("kmeans","gmm"),
+                              k = 2, nstart = 50, gmm_G = NULL) {
+  method <- match.arg(method)
+  n <- length(ids)
+  
+  # sample indices with replacement
+  idx_b <- sample.int(n, size = n, replace = TRUE)
+  ids_b <- ids[idx_b]
+  X_b   <- X_scaled[idx_b, , drop = FALSE]  # already scaled by reference params
+  
+  #fit clustering on bootstrap sample
+  if (method == "kmeans") {
+    fit_b <- kmeans(X_b, centers = k, nstart = nstart)
+    cl_b  <- setNames(fit_b$cluster, ids_b)
+  } else {
+    # GMM: allow BIC to pick G, or lock it via gmm_G
+    if (is.null(gmm_G)) {
+      fit_b <- Mclust(X_b)
+    } else {
+      fit_b <- Mclust(X_b, G = gmm_G)
+    }
+    cl_b <- setNames(fit_b$classification, ids_b)
+  }
+  
+  #compare to reference on overlapping IDs (unique in bootstrap sample)
+  overlap_ids <- intersect(names(cl_b), names(if (method=="kmeans") cl_km_ref else cl_gmm_ref))
+  
+  #If duplicates exist in bootstrap sample, keep first occurrence
+  #(SetNAMEs already map id->label; duplicated ids will be overwritten, leaving last; ensure unique)
+  cl_b_uniq <- cl_b[!duplicated(names(cl_b))]
+  overlap_ids <- intersect(names(cl_b_uniq), overlap_ids)
+  
+  ref_labels  <- if (method == "kmeans") cl_km_ref[overlap_ids] else cl_gmm_ref[overlap_ids]
+  b_labels    <- cl_b_uniq[overlap_ids]
+  
+  ari_val <- adjustedRandIndex(as.integer(ref_labels), as.integer(b_labels))
+  
+  tibble(
+    boot = b,
+    method = method,
+    n_overlap = length(overlap_ids),
+    ARI_to_reference = ari_val
+  )
+}
+
+# --- 4) Run bootstrap for both methods ---
+B <- 200  
+
+set.seed(2025)
+res_km  <- map_dfr(1:B, ~boot_cluster_once(.x, ids, X_scaled, sc_center, sc_scale,
+                                           method = "kmeans", k = 2, nstart = 50))
+set.seed(2025)
+res_gmm <- map_dfr(1:B, ~boot_cluster_once(.x, ids, X_scaled, sc_center, sc_scale,
+                                           method = "gmm", gmm_G = NULL)) # set gmm_G=2 to lock components
+
+res_all <- bind_rows(res_km, res_gmm)
+
+# --- 5) Summaries ---
+stab_summary <- res_all %>%
+  group_by(method) %>%
+  summarise(
+    B = n(),
+    mean_ARI   = mean(ARI_to_reference, na.rm = TRUE),
+    median_ARI = median(ARI_to_reference, na.rm = TRUE),
+    sd_ARI     = sd(ARI_to_reference, na.rm = TRUE),
+    q05        = quantile(ARI_to_reference, 0.05, na.rm = TRUE),
+    q25        = quantile(ARI_to_reference, 0.25, na.rm = TRUE),
+    q75        = quantile(ARI_to_reference, 0.75, na.rm = TRUE),
+    q95        = quantile(ARI_to_reference, 0.95, na.rm = TRUE),
+    mean_overlap = mean(n_overlap)
+  )
+
+print(stab_summary)
+
+
+
+###############################################################
+# Sensitivity check for MMSE thresholds: -1.0, -1.5, -2.0
+# - Rebuild theory groups for each cut
+# - Fit unified BAG models: (1) RI, (2) RI + RS (uncorrelated)
+# - Return group sizes and key fixed effects (with 95% CIs)
+###############################################################
+
+library(dplyr)
+library(tidyr)
+library(lmerTest)
+library(broom.mixed)
+library(purrr)
+library(tibble)
+
+#Helper: build theory groups for a given MMSE cut
+mk_groups_cut <- function(df_wide, mmse_cut) {
+  df_wide %>%
+    mutate(
+      MMSE_diff = MMSE_v2 - MMSE_v1,
+      resilience_group = case_when(
+        BAG_v1 < 0 ~ "BM",
+        BAG_v1 > 0 & MMSE_diff > mmse_cut ~ "CR",
+        TRUE ~ "NoRes"
+      ),
+      resilience_group = factor(resilience_group, levels = c("BM","CR","NoRes"))
+    )
+}
+
+#Helper: make unified long data for BAG + MCT (matches your `.value` pivot style)
+mk_long_all <- function(df_wide_with_groups) {
+  df_wide_with_groups %>%
+    select(Individual, resilience_group,
+           BAG_v1, BAG_v2,
+           Mean_ThicknessLONG_RA_v1, Mean_ThicknessLONG_RA_v2) %>%
+    pivot_longer(
+      cols = c(BAG_v1, BAG_v2,
+               Mean_ThicknessLONG_RA_v1, Mean_ThicknessLONG_RA_v2),
+      names_to    = c(".value", "Timepoint"),
+      names_pattern = "(.*)_(v[12])"  # -> creates columns: BAG, Mean_ThicknessLONG_RA
+    ) %>%
+    mutate(
+      Time  = ifelse(Timepoint == "v1", 0, 1),
+      Group = factor(resilience_group, levels = c("BM","CR","NoRes"))
+    )
+}
+
+#Helper: fit unified models for BAG and extract key fixed effects
+fit_bag_models <- function(df_long_all) {
+  #Random-intercept (RI)
+  bag_ri  <- lmer(BAG ~ Group * Time + (1 | Individual), data = df_long_all)
+  
+  #Random intercept + random slope (uncorrelated)
+  bag_rs  <- lmer(BAG ~ Group * Time + (1 + Time || Individual), data = df_long_all)
+  
+  #Tidy fixed effects with 95% CIs
+  fx_ri <- broom.mixed::tidy(bag_ri, effects = "fixed", conf.int = TRUE, conf.method = "Wald")
+  fx_rs <- broom.mixed::tidy(bag_rs, effects = "fixed", conf.int = TRUE, conf.method = "Wald")
+  
+  #Keep the time trajectory terms (BM slope + interactions)
+  keep_terms <- c("Time", "GroupCR:Time", "GroupNoRes:Time")
+  fx_ri <- fx_ri %>% filter(term %in% keep_terms)
+  fx_rs <- fx_rs %>% filter(term %in% keep_terms)
+  
+  list(bag_ri = bag_ri, bag_rs = bag_rs, fx_ri = fx_ri, fx_rs = fx_rs)
+}
+
+#Sensitivity cuts
+cuts <- c(-1.0, -1.5, -3.0)
+
+#Run sensitivity
+sens_list <- map(cuts, function(cut) {
+  # 1) Build groups under this cut
+  df_cut <- mk_groups_cut(df1_wide, cut)
+  
+  # 2) Group sizes
+  grp_n <- df_cut %>% count(resilience_group, name = "n")
+  
+  # 3) Long data (BAG + MCT) using `.value` pivot (same as your unified block)
+  df_long_all_cut <- mk_long_all(df_cut)  # BAG, Mean_ThicknessLONG_RA, Time, Group
+  # (Matches your existing long build approach.)  # 
+  
+  # 4) Fit unified BAG models & extract key fixed effects
+  fits <- fit_bag_models(df_long_all_cut)
+  
+  # 5) Also include a quick RI vs RS model comparison p-value (LRT)
+  cmp <- anova(fits$bag_ri, fits$bag_rs)
+  lrt_p <- tryCatch(cmp$`Pr(>Chisq)`[2], error = function(e) NA_real_)
+  
+  list(
+    cutoff   = cut,
+    group_ns = grp_n,
+    fx_BAG_RI = fits$fx_ri,
+    fx_BAG_RS = fits$fx_rs,
+    LRT_p_RI_vs_RS = lrt_p
+  )
+})
+
+# ---------- Compact printouts ----------
+
+#(A) Group sizes per cut
+cat("\n=== Group sizes by MMSE threshold ===\n")
+walk(sens_list, function(x) {
+  cat(sprintf("\nMMSE cut = %s\n", x$cutoff))
+  print(x$group_ns)
+})
+
+# (B) Fixed effects (BM slope and interactions) with 95% CIs
+cat("\n=== Fixed effects (BAG) — Random Intercept model ===\n")
+walk(sens_list, function(x) {
+  cat(sprintf("\nMMSE cut = %s  [RI model]\n", x$cutoff))
+  print(x$fx_BAG_RI %>%
+          select(term, estimate, conf.low, conf.high, p.value))
+})
+
+cat("\n=== Fixed effects (BAG) — Random Intercept + Random Slope (uncorrelated) model ===\n")
+walk(sens_list, function(x) {
+  cat(sprintf("\nMMSE cut = %s  [RI+RS (uncorr) model]\n", x$cutoff))
+  print(x$fx_BAG_RS %>%
+          select(term, estimate, conf.low, conf.high, p.value))
+  cat(sprintf("LRT RI vs RS p-value: %s\n", format(x$LRT_p_RI_vs_RS, digits = 3)))
+})
+
+ 
